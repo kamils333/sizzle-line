@@ -62,19 +62,19 @@ export function stageShot(name, world) {
   if (name === 'ready') {
     for (let i = 0; i < READY_CAP_SECONDS / STEP; i += 1) {
       const held = tick(world, true);
-      if (held && world.state.orders.length >= 2) break;
+      if (held) break;
       if (world.step(STEP, false) & EVENT_OVER) break;
     }
     return { screen: SCREEN_PLAY };
   }
 
-  // 'rush': stop the first time the active order is genuinely mid-build, with company on the board.
+  // 'rush': stop the first time the active order is genuinely mid-build.
   for (let i = 0; i < RUSH_CAP_SECONDS / STEP; i += 1) {
     tick(world, false);
     if (world.step(STEP, false) & EVENT_OVER) break;
     const active = world.activeOrder();
     const steps = active === null ? 0 : DISHES[active.dishId].steps.length;
-    if (active !== null && active.stepsDone > 0 && active.stepsDone < steps && world.state.orders.length >= 2 && i > 5 / STEP) break;
+    if (active !== null && active.stepsDone > 0 && active.stepsDone < steps && i > 5 / STEP) break;
   }
   return { screen: SCREEN_PLAY };
 }

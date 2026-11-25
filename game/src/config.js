@@ -13,10 +13,13 @@ export const ROUND_SECONDS = 90;
 export const ORDER_SLOTS = 3;
 
 /** Seconds between new tickets, picked at random in this range (tighter as the rush builds). */
-export const SPAWN_INTERVAL = { start: [2.2, 3.4], end: [1.1, 2], rampSeconds: 50 };
+export const SPAWN_INTERVAL = { start: [2.2, 3.4], end: [0.9, 1.6], rampSeconds: 65 };
 
 /** How long a station stays busy after one click, so a dish is built click by click, not by holding one down. */
 export const STATION_BUSY = 0.6;
+
+/** How long a finished plate may sit at the service window before it goes cold. */
+export const COLD_SECONDS = 4.5;
 
 /** Points and combo. */
 export const SCORE = {
@@ -25,6 +28,7 @@ export const SCORE = {
   comboStep: 18,
   comboCap: 10,
   missPenaltyCombo: true,
+  coldFlat: 15,
 };
 
 /** An ingredient the pantry keeps on the counter: its label and the station that works it. */
@@ -45,6 +49,14 @@ export const DISHES = {
     name: 'Hearth Stack',
     steps: [
       { ingredient: 'greens', station: 'chop' },
+      { ingredient: 'patty', station: 'stove' },
+    ],
+    reward: 1,
+  },
+  backyard_burger: {
+    name: 'Backyard Burger',
+    steps: [
+      { ingredient: 'bun', station: 'chop' },
       { ingredient: 'patty', station: 'stove' },
     ],
     reward: 1,

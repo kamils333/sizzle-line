@@ -2,7 +2,7 @@
 // scaled to fit the window and centred. Flat shapes and a little glow, canvas text for the board
 // and the HUD, nothing photographic: Sizzle Line draws its own kitchen, its own food and its own
 // sign, never another game's.
-import { DISHES, FIELD, FONT, INGREDIENTS, ORDER_SLOTS, PALETTE, ROUND_SECONDS } from './config.js';
+import { COLD_SECONDS, DISHES, FIELD, FONT, INGREDIENTS, ORDER_SLOTS, PALETTE, ROUND_SECONDS, STATION_BUSY } from './config.js';
 
 export const SCREEN_TITLE = 'title';
 export const SCREEN_PLAY = 'play';
@@ -34,6 +34,65 @@ export function hitTest(x, y) {
 
 function inRect(x, y, r) {
   return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+}
+
+/** The station the active order's very next step needs, or null (no active order, or it is ready). */
+function nextStationFor(state) {
+  const order = state.orders.find((o) => o.id === state.activeOrderId);
+  if (order === undefined) return null;
+  const dish = DISHES[order.dishId];
+  if (order.stepsDone >= dish.steps.length) return null;
+  return dish.steps[order.stepsDone].station;
+}
+
+/** A ring that glows and nudges outward around a station that is waiting for its click. */
+function drawNextHint(ctx, cx, cy, radius, pulse) {
+  ctx.save();
+  ctx.globalAlpha = 0.55 + pulse * 0.35;
+  ctx.strokeStyle = PALETTE.comboText;
+  ctx.lineWidth = 4;
+  ctx.setLineDash([10, 8]);
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius + pulse * 5, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** A short burst of radiating lines, for the instant a station's click lands. */
+function drawImpact(ctx, cx, cy, life) {
+  if (life <= 0) return;
+  const t = 1 - life / 0.25;
+  ctx.save();
+  ctx.globalAlpha = 1 - t;
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 3;
+  ctx.lineCap = 'round';
+  const reach = 20 + t * 34;
+  for (let i = 0; i < 6; i += 1) {
+    const a = (i / 6) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.moveTo(cx + Math.cos(a) * reach * 0.5, cy + Math.sin(a) * reach * 0.5);
+    ctx.lineTo(cx + Math.cos(a) * reach, cy + Math.sin(a) * reach);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/** The doneness arc a working station shows while its STATION_BUSY cooldown runs down. */
+function drawDoneness(ctx, cx, cy, radius, busy) {
+  if (busy <= 0) return;
+  const ratio = 1 - busy / STATION_BUSY;
+  ctx.save();
+  ctx.lineWidth = 6;
+  ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.strokeStyle = PALETTE.good;
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, -Math.PI / 2, -Math.PI / 2 + ratio * Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
 }
 
 /** How the fixed 1280x720 scene maps onto a canvas of `width` by `height` device pixels. */
@@ -200,28 +259,59 @@ function drawHud(ctx, state) {
   }
 }
 
+function drawComboCelebrate(ctx, state) {
+  if (state.comboCelebrate <= 0) return;
+  const t = state.comboCelebrate / 1.1;
+  ctx.save();
+  ctx.globalAlpha = Math.min(1, t * 2);
+  const scale = 1.4 - t * 0.4;
+  const cx = FIELD.width / 2;
+  const cy = 190;
+  ctx.translate(cx, cy);
+  ctx.scale(scale, scale);
+  ctx.translate(-cx, -cy);
+  label(ctx, `COMBO STREAK x${state.combo}!`, cx, cy, 40, PALETTE.comboText, 'center', 800);
+  ctx.restore();
+}
+
 function ticketProgressColor(ratio) {
   if (ratio < 0.25) return PALETTE.bad;
   if (ratio < 0.55) return PALETTE.warn;
   return PALETTE.good;
 }
 
-function drawTicket(ctx, order, index, activeId) {
+function drawTicket(ctx, order, index, activeId, state, clock) {
   const b = LAYOUT.board;
   const x = b.x + index * (b.w + b.gap);
   const y = b.y;
   const dish = DISHES[order.dishId];
   const active = order.id === activeId;
+  const urgent = order.remaining / order.total < 0.25;
+  const pop = active && state.flashStep > 0 ? 1 + (state.flashStep / 0.2) * 0.05 : 1;
   ctx.save();
-  ctx.shadowColor = active ? 'rgba(255,209,102,0.8)' : 'rgba(0,0,0,0.4)';
-  ctx.shadowBlur = active ? 24 : 10;
-  ctx.fillStyle = PALETTE.ticket;
+  if (pop !== 1) {
+    ctx.translate(x + b.w / 2, y + b.h / 2);
+    ctx.scale(pop, pop);
+    ctx.translate(-(x + b.w / 2), -(y + b.h / 2));
+  }
+  if (urgent) ctx.globalAlpha = 0.55 + Math.sin(clock * 10) * 0.25;
+  ctx.shadowColor = active ? 'rgba(255,209,102,0.8)' : urgent ? 'rgba(226,84,59,0.6)' : 'rgba(0,0,0,0.4)';
+  ctx.shadowBlur = active ? 24 : urgent ? 16 : 10;
+  const grad = ctx.createLinearGradient(x, y, x, y + b.h);
+  grad.addColorStop(0, PALETTE.ticket);
+  grad.addColorStop(1, PALETTE.ticketShade);
+  ctx.fillStyle = grad;
   roundRect(ctx, x, y, b.w, b.h, 14);
   ctx.fill();
   ctx.shadowBlur = 0;
   if (active) {
     ctx.lineWidth = 4;
     ctx.strokeStyle = PALETTE.comboText;
+    roundRect(ctx, x + 2, y + 2, b.w - 4, b.h - 4, 12);
+    ctx.stroke();
+  } else if (urgent) {
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = PALETTE.bad;
     roundRect(ctx, x + 2, y + 2, b.w - 4, b.h - 4, 12);
     ctx.stroke();
   }
@@ -255,8 +345,8 @@ function drawTicket(ctx, order, index, activeId) {
   ctx.restore();
 }
 
-function drawBoard(ctx, state) {
-  for (let i = 0; i < state.orders.length; i += 1) drawTicket(ctx, state.orders[i], i, state.activeOrderId);
+function drawBoard(ctx, state, clock) {
+  for (let i = 0; i < state.orders.length; i += 1) drawTicket(ctx, state.orders[i], i, state.activeOrderId, state, clock);
   const empties = ORDER_SLOTS - state.orders.length;
   for (let i = 0; i < empties; i += 1) {
     const slot = state.orders.length + i;
@@ -271,12 +361,23 @@ function drawBoard(ctx, state) {
   }
 }
 
-function drawChop(ctx, state) {
+function drawChop(ctx, state, pulse, highlight) {
   const r = LAYOUT.chop;
-  ctx.fillStyle = PALETTE.chop;
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.4)';
+  ctx.shadowBlur = 14;
+  ctx.shadowOffsetY = 6;
+  const bodyGrad = ctx.createLinearGradient(r.x, r.y + 40, r.x, r.y + r.h);
+  bodyGrad.addColorStop(0, '#7a5636');
+  bodyGrad.addColorStop(1, PALETTE.chop);
+  ctx.fillStyle = bodyGrad;
   roundRect(ctx, r.x, r.y + 40, r.w, r.h - 40, 18);
   ctx.fill();
-  ctx.fillStyle = PALETTE.chopTop;
+  ctx.restore();
+  const topGrad = ctx.createLinearGradient(r.x + 16, r.y + 56, r.x + 16, r.y + r.h - 40);
+  topGrad.addColorStop(0, '#9b7249');
+  topGrad.addColorStop(1, PALETTE.chopTop);
+  ctx.fillStyle = topGrad;
   roundRect(ctx, r.x + 16, r.y + 56, r.w - 32, r.h - 96, 12);
   ctx.fill();
   // A few worn knife-marks on the board, so it reads as used even before the knife falls on it.
@@ -329,6 +430,9 @@ function drawChop(ctx, state) {
   ctx.arc(-58, 25, 3, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
+  drawDoneness(ctx, cx, r.y + r.h - 34, 20, state.stationBusy.chop);
+  drawImpact(ctx, cx, cy, state.impact.chop);
+  if (highlight && state.stationBusy.chop === 0) drawNextHint(ctx, r.x + r.w / 2, r.y + r.h / 2, Math.max(r.w, r.h) / 2 + 6, pulse);
   if (state.flashBuzz > 0) drawBuzz(ctx, cx, cy - 70);
   label(ctx, 'CHOPPING BOARD', r.x + r.w / 2, r.y + 26, 16, PALETTE.textDim, 'center', 700);
 }
@@ -354,12 +458,23 @@ function drawFlame(ctx, cx, cy, grow) {
   ctx.restore();
 }
 
-function drawStove(ctx, state, pulse) {
+function drawStove(ctx, state, pulse, highlight) {
   const r = LAYOUT.stove;
-  ctx.fillStyle = PALETTE.stove;
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.4)';
+  ctx.shadowBlur = 14;
+  ctx.shadowOffsetY = 6;
+  const bodyGrad = ctx.createLinearGradient(r.x, r.y + 40, r.x, r.y + r.h);
+  bodyGrad.addColorStop(0, '#45413f');
+  bodyGrad.addColorStop(1, PALETTE.stove);
+  ctx.fillStyle = bodyGrad;
   roundRect(ctx, r.x, r.y + 40, r.w, r.h - 40, 18);
   ctx.fill();
-  ctx.fillStyle = PALETTE.stoveTop;
+  ctx.restore();
+  const topGrad = ctx.createLinearGradient(r.x + 16, r.y + 56, r.x + 16, r.y + 100);
+  topGrad.addColorStop(0, '#4c4646');
+  topGrad.addColorStop(1, PALETTE.stoveTop);
+  ctx.fillStyle = topGrad;
   roundRect(ctx, r.x + 16, r.y + 56, r.w - 32, 44, 10);
   ctx.fill();
   const cx = r.x + r.w / 2;
@@ -419,6 +534,9 @@ function drawStove(ctx, state, pulse) {
       ctx.restore();
     }
   }
+  drawDoneness(ctx, cx, panY - 90, 16, state.stationBusy.stove);
+  drawImpact(ctx, cx, panY - 6, state.impact.stove);
+  if (highlight && state.stationBusy.stove === 0) drawNextHint(ctx, r.x + r.w / 2, r.y + r.h / 2, Math.max(r.w, r.h) / 2 + 6, pulse);
   if (state.flashBuzz > 0) drawBuzz(ctx, cx, r.y - 4);
   label(ctx, 'STOVE', r.x + r.w / 2, r.y + 26, 16, PALETTE.textDim, 'center', 700);
 }
@@ -435,32 +553,52 @@ function drawPass(ctx, state, pulse) {
   const order = state.orders.find((o) => o.id === state.activeOrderId) ?? null;
   const dish = order ? DISHES[order.dishId] : null;
   const ready = order !== null && order.stepsDone >= dish.steps.length;
+  const cold = ready && order.cold;
   const cx = r.x + r.w / 2;
   const cy = r.y + 150;
   ctx.save();
-  if (ready) {
+  if (ready && !cold) {
     ctx.shadowColor = PALETTE.windowGlow;
     ctx.shadowBlur = 24 + pulse * 10;
+  } else if (cold) {
+    ctx.shadowColor = PALETTE.bad;
+    ctx.shadowBlur = 18;
   }
-  ctx.fillStyle = PALETTE.plate;
+  ctx.fillStyle = cold ? '#c9c2b4' : PALETTE.plate;
   ctx.beginPath();
   ctx.arc(cx, cy, 100, 0, Math.PI * 2);
   ctx.fill();
   ctx.shadowBlur = 0;
-  ctx.strokeStyle = PALETTE.plateRim;
+  ctx.strokeStyle = cold ? PALETTE.bad : PALETTE.plateRim;
   ctx.lineWidth = 6;
   ctx.beginPath();
   ctx.arc(cx, cy, 86, 0, Math.PI * 2);
   ctx.stroke();
   ctx.restore();
+  if (ready && !cold) {
+    // A freshness ring: how much of the cold countdown is left before the plate spoils.
+    const freshRatio = Math.max(0, 1 - order.held / COLD_SECONDS);
+    ctx.save();
+    ctx.lineWidth = 5;
+    ctx.strokeStyle = freshRatio < 0.35 ? PALETTE.warn : PALETTE.windowGlow;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 110, -Math.PI / 2, -Math.PI / 2 + freshRatio * Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
   if (dish !== null) {
     const spacing = 58;
     const startX = cx - (spacing * (dish.steps.length - 1)) / 2;
+    ctx.save();
+    if (cold) ctx.globalAlpha = 0.6;
     for (let i = 0; i < dish.steps.length; i += 1) {
       if (i < order.stepsDone) drawIngredient(ctx, dish.steps[i].ingredient, startX + i * spacing, cy, 46);
     }
+    ctx.restore();
   }
-  if (ready) {
+  if (cold) {
+    label(ctx, 'GONE COLD — SERVE ANYWAY?', cx, r.y + r.h - 20, 16, PALETTE.bad, 'center', 700);
+  } else if (ready) {
     label(ctx, 'READY — CLICK TO SERVE', cx, r.y + r.h - 20, 17, PALETTE.windowGlow, 'center', 700);
   } else if (order !== null) {
     label(ctx, `${order.stepsDone}/${dish.steps.length} PLATED`, cx, r.y + r.h - 20, 15, PALETTE.textDim, 'center', 600);
@@ -471,26 +609,39 @@ function drawPass(ctx, state, pulse) {
   if (state.flashServe > 0) {
     ctx.save();
     ctx.globalAlpha = Math.min(1, state.flashServe * 2.4);
-    label(ctx, `+${state.lastGain}`, cx, cy - 70, 30, PALETTE.good, 'center', 800);
+    label(ctx, `+${state.lastGain}`, cx, cy - 70, 30, state.lastCold ? PALETTE.bad : PALETTE.good, 'center', 800);
     ctx.restore();
   }
 }
 
 function drawCounter(ctx, t) {
   const c = LAYOUT.counter;
-  ctx.fillStyle = PALETTE.counter;
+  const grad = ctx.createLinearGradient(0, c.y, 0, c.y + c.h);
+  grad.addColorStop(0, '#4a3626');
+  grad.addColorStop(1, PALETTE.counter);
+  ctx.fillStyle = grad;
   ctx.fillRect(c.x, c.y, c.w, c.h);
   ctx.fillStyle = PALETTE.counterTop;
   ctx.fillRect(c.x, c.y, c.w, 18);
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  ctx.fillRect(c.x, c.y + 18, c.w, 3);
   const n = COUNTER_ITEMS.length;
   const slot = c.w / n;
   for (let i = 0; i < n; i += 1) {
     const key = COUNTER_ITEMS[i];
     const cx = c.x + slot * (i + 0.5);
     const cy = c.y + 70 + Math.sin(t * 1.4 + i) * 2;
-    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,0.3)';
+    ctx.shadowBlur = 8;
+    ctx.shadowOffsetY = 3;
+    const binGrad = ctx.createLinearGradient(0, c.y + 34, 0, c.y + 126);
+    binGrad.addColorStop(0, 'rgba(0,0,0,0.3)');
+    binGrad.addColorStop(1, 'rgba(0,0,0,0.12)');
+    ctx.fillStyle = binGrad;
     roundRect(ctx, cx - 44, c.y + 34, 88, 92, 12);
     ctx.fill();
+    ctx.restore();
     drawIngredient(ctx, key, cx, cy, 52);
     label(ctx, INGREDIENTS[key].label, cx, c.y + 142, 14, PALETTE.textDim, 'center', 600);
   }
@@ -506,7 +657,10 @@ function drawPanel(ctx, title, lines, prompt) {
   ctx.fillRect(0, 0, FIELD.width, FIELD.height);
   ctx.shadowColor = 'rgba(0,0,0,0.5)';
   ctx.shadowBlur = 30;
-  ctx.fillStyle = PALETTE.board;
+  const panelGrad = ctx.createLinearGradient(x, y, x, y + h);
+  panelGrad.addColorStop(0, '#6b3627');
+  panelGrad.addColorStop(1, PALETTE.board);
+  ctx.fillStyle = panelGrad;
   roundRect(ctx, x, y, w, h, 22);
   ctx.fill();
   ctx.shadowBlur = 0;
@@ -550,14 +704,16 @@ export function createRenderer(canvas) {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.setTransform(view.scale, 0, 0, view.scale, view.x, view.y);
 
+    const next = nextStationFor(state);
     drawBackdrop(ctx);
     drawCounter(ctx, clock);
-    drawChop(ctx, state);
-    drawStove(ctx, state, pulse);
+    drawChop(ctx, state, pulse, next === 'chop');
+    drawStove(ctx, state, pulse, next === 'stove');
     drawPass(ctx, state, pulse);
-    drawBoard(ctx, state);
+    drawBoard(ctx, state, clock);
     drawTimer(ctx, state.timeLeft);
     drawHud(ctx, state);
+    drawComboCelebrate(ctx, state);
 
     if (screen === SCREEN_TITLE) {
       drawPanel(ctx, 'SIZZLE LINE', ['A one-cook kitchen rush.', 'Chop at the board, cook at the stove,', 'then pass the plate before the ticket burns.'], 'Click to start service');
